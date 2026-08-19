@@ -1,0 +1,65 @@
+{
+  "term": "MSDSM Batch 6 - Term 1",
+
+  "scheduleFile": {
+    "id": "<YOUR_SCHEDULE_SHEET_ID>",
+    "note": "Raw .xlsx on Drive (view-only) -- read via Drive files.get(alt=media) + the xlsx package, not the Sheets API.",
+    "sheetName": "Sheet1",
+    "legendMarker": "Course Code",
+    "headerRow": {
+      "date": "Date",
+      "day": "Day"
+    }
+  },
+
+  "attendanceSheet": {
+    "id": "<YOUR_ATTENDANCE_SHEET_ID>",
+    "note": "Native Google Sheet, editable -- one tab per subject code (some subjects split across multiple tabs by roll-number range).",
+    "columns": {
+      "srNo": "Sr.\nNo.",
+      "name": "Name of the Student",
+      "rollNumber": "Institute Roll Number",
+      "sessionPrefix": "Session "
+    },
+    "presentValue": "Present"
+  },
+
+  "subjectCodeMap": {
+    "ME": "DSM 107",
+    "MC": "DSM 104",
+    "BR": "DSM 106",
+    "SM": "DSM 108",
+    "MP": "DSM 109",
+    "PS": "DSM 101",
+    "PFDS": "DSM 102",
+    "DS": "DSM 103"
+  },
+
+  "nonClassMarkers": ["holiday", "mid term", "end term", "iim indore", "iit indore"],
+
+  "timeSlots": {
+    "weekday": [
+      { "column": 2, "label": "Session-I", "start": "19:00", "end": "20:00" },
+      { "column": 3, "label": "Session-II", "start": "20:15", "end": "21:15" }
+    ],
+    "weekend": [
+      { "column": 4, "label": "Session-I", "start": "10:45", "end": "11:45" },
+      { "column": 5, "label": "Session-II", "start": "12:00", "end": "13:00" },
+      { "column": 6, "label": "Session-III", "start": "14:45", "end": "15:45" },
+      { "column": 7, "label": "Session-IV", "start": "16:00", "end": "17:00" }
+    ]
+  },
+  "slotGraceMinutes": 180,
+
+  "googleOAuth": {
+    "clientSecretFile": "./oauth-client.json",
+    "tokenFile": "~/.attendance-sync/google-oauth-token.json"
+  },
+
+  "matching": {
+    "fuzzyThreshold": 0.82,
+    "ambiguityMargin": 0.05
+  },
+
+  "logFile": "~/.attendance-sync/mark-attendance.log.jsonl"
+}

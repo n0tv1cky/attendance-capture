@@ -1,0 +1,16 @@
+{
+  "name": "attendance-sync",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Marks Zoom-class attendance into the MSDSM coursewise attendance Google Sheet, from a copied Zoom participant list matched against the batch roster.",
+  "scripts": {
+    "mark": "node mark-attendance.mjs",
+    "mark:dry": "node mark-attendance.mjs"
+  },
+  "dependencies": {
+    "@google-cloud/local-auth": "^3.0.1",
+    "googleapis": "^174.0.1",
+    "xlsx": "^0.18.5"
+  }
+}
