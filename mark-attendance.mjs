@@ -89,20 +89,21 @@ async function pickSubject(config, drive, rl) {
     }
   }
 
-  const { todayRow, candidates, allToday } = findCandidateSessions(timetableRows, config, new Date());
+  const { todayRow, candidates, allToday, tier } = findCandidateSessions(timetableRows, config, new Date());
   if (!todayRow) {
     throw new Error("Today's date isn't in the schedule sheet. Pass --subject to skip auto-detection.");
   }
   if (candidates.length === 1) {
     const c = candidates[0];
-    console.log(`Auto-detected: ${c.subjectCode} (${c.slot.label}, "${c.rawCell}") is the class in/near its time window right now.`);
+    const tierDesc = tier === "live" ? "is happening right now" : "ended a while ago but is the most recent class today";
+    console.log(`Auto-detected: ${c.subjectCode} (${c.slot.label}, "${c.rawCell}") ${tierDesc}.`);
     return c.subjectCode;
   }
 
   console.log("\nCouldn't auto-detect a single current class. Today's scheduled classes:");
   if (allToday.length === 0) console.log("  (none found -- check schedule sheet, or pass --subject explicitly)");
   for (const c of allToday) console.log(`  ${c.slot.label} (${c.slot.start}-${c.slot.end}): ${c.subjectCode}  [raw: "${c.rawCell}"]`);
-  if (candidates.length > 1) console.log(`\n${candidates.length} classes fall within the current time window -- ambiguous.`);
+  if (candidates.length > 1) console.log(`\n${candidates.length} classes are equally "${tier}" right now -- ambiguous.`);
 
   const answer = await rl.question("\nEnter the subject code/abbreviation to use (or Ctrl+C to abort): ");
   const resolved = resolveSubjectArg(answer, config.subjectCodeMap);
@@ -150,8 +151,17 @@ async function main() {
 
     const matched = [];
     const unmatched = [];
+    const excludedByRole = [];
     const seenRows = new Set();
     for (const p of participants) {
+      if (p.role === "host" || p.role === "co-host") {
+        // Zoom's own role tag, not a name guess -- verified live that every
+        // non-student participant (AV/recording accounts, faculty) carries
+        // one of these, so they're routed here instead of into the
+        // "needs review" bucket. See lib/participants.mjs for the reasoning.
+        excludedByRole.push({ participant: p.raw, role: p.role });
+        continue;
+      }
       const result = matchParticipant(p, tab.students, config.matching);
       if (result.method === "unmatched") {
         unmatched.push({ participant: p.raw, reason: result.reason });
@@ -164,6 +174,10 @@ async function main() {
 
     console.log(`\nMatched ${matched.length}/${participants.length} participant(s):`);
     for (const m of matched) console.log(`  [${m.method}${m.score < 1 ? ` ${m.score.toFixed(2)}` : ""}] "${m.participant}" -> ${m.student.name} (${m.student.rollNumber})`);
+    if (excludedByRole.length > 0) {
+      console.log(`\n${excludedByRole.length} excluded as non-student (Zoom ${excludedByRole.length === 1 ? "role tag" : "role tags"} -- host/co-host, nothing to do):`);
+      for (const e of excludedByRole) console.log(`  "${e.participant}"`);
+    }
     if (unmatched.length > 0) {
       console.log(`\n${unmatched.length} participant(s) NOT matched (not written -- review manually):`);
       for (const u of unmatched) console.log(`  "${u.participant}" -- ${u.reason}`);
@@ -187,6 +201,7 @@ async function main() {
       sessionNumber: targetCol.sessionNumber,
       participantsCount: participants.length,
       matchedCount: matched.length,
+      excludedByRoleCount: excludedByRole.length,
       unmatchedCount: unmatched.length,
       written,
       unmatched: unmatched.map((u) => u.participant),

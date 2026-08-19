@@ -49,6 +49,7 @@
       { "column": 7, "label": "Session-IV", "start": "16:00", "end": "17:00" }
     ]
   },
+  "liveBufferMinutes": 15,
   "slotGraceMinutes": 180,
 
   "googleOAuth": {
