@@ -5,9 +5,10 @@
 //   1. Read the schedule .xlsx (Drive, view-only) -> figure out which
 //      subject(s) plausibly correspond to "the class we're in / just
 //      finished", from today's date + current time vs the configured slots.
-//   2. Read the Zoom participant list (clipboard, via Zoom's own
-//      "Copy Participant List" -- see lib/participants.mjs for why we don't
-//      automate Zoom's UI directly).
+//   2. Read the live Zoom participant list -- via a macOS Accessibility
+//      read of the open Participants window, not "Copy Participant List"
+//      (that menu option turned out to be host/co-host only). See
+//      lib/participants.mjs for the mechanics and why they're reliable.
 //   3. Match each participant against the subject's roster tab(s) in the
 //      attendance sheet (roll number > exact name > confident fuzzy name;
 //      anything else is reported, not guessed).
@@ -19,7 +20,7 @@
 //   node mark-attendance.mjs --apply                # actually writes to the sheet
 //   node mark-attendance.mjs --subject ME           # override auto-detected subject (abbreviation or "DSM 107")
 //   node mark-attendance.mjs --session 5            # override auto-picked session column
-//   node mark-attendance.mjs --participants-file p.txt   # read participant list from a file instead of the clipboard
+//   node mark-attendance.mjs --participants-file p.txt   # read participant list from a file instead of Zoom directly
 //   node mark-attendance.mjs --config path/to/config.json
 
 import { google } from "googleapis";
@@ -143,7 +144,7 @@ async function main() {
     const { tab, targetCol } = active;
     console.log(`  active tab: "${tab.tabTitle}" -> Session ${targetCol.sessionNumber} (${tab.students.length} students)`);
 
-    console.log(`\nReading participant list${PARTICIPANTS_FILE ? ` from ${PARTICIPANTS_FILE}` : " from clipboard"}...`);
+    console.log(`\nReading participant list${PARTICIPANTS_FILE ? ` from ${PARTICIPANTS_FILE}` : " from Zoom (accessibility read)"}...`);
     const participants = loadParticipants({ participantsFile: PARTICIPANTS_FILE });
     console.log(`  ${participants.length} participant(s) found.`);
 

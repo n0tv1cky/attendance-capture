@@ -1,10 +1,10 @@
 # Attendance marking
 
 Marks Zoom-class attendance into the MSDSM coursewise attendance Google
-Sheet, from a copied Zoom participant list matched against the batch roster.
-No browser automation anywhere in the pipeline — the schedule and roster
-files, and the write itself, all go through the real Google Sheets/Drive
-APIs with your own OAuth login.
+Sheet, from the live Zoom participant list matched against the batch
+roster. No browser automation anywhere in the pipeline — the schedule and
+roster files, and the write itself, all go through the real Google
+Sheets/Drive APIs with your own OAuth login.
 
 ## Why this design
 
@@ -44,14 +44,27 @@ Confirmed by reading the actual data, not assumed. `pickActiveTab()` in
 participants against that tab alone, so a student never gets double-matched
 across both.
 
-**No Zoom UI automation.** Zoom's participants panel is a fragile target for
-accessibility/AppleScript scripting (labels/positions shift across versions,
-and there's no way to verify a click sequence works without a live meeting
-to test against). A silent failure there means wrong attendance in a shared
-institute sheet, which is worse than just not automating it. Instead: in the
-meeting, use Zoom's own **Participants panel → "..." → Copy Participant
-List** (2 clicks, stable across versions) — this script just reads that off
-the clipboard.
+**Getting the participant list: accessibility read, not "Copy Participant
+List".** The original plan was to use Zoom's built-in Participants panel →
+"..." → Copy Participant List, reading the clipboard. Verified against a
+real live meeting that this menu option **doesn't exist for a plain
+participant** — it's host/co-host only, and you're neither on these class
+meetings. What does work, also verified live: `lib/participants.mjs` reads
+the participant names directly off the Participants window's accessibility
+tree via `osascript`/System Events. Two things had to be true for this to be
+reliable, both discovered by testing against the real meeting rather than
+assumed:
+1. **Zoom must be frontmost when queried** — its floating panel windows
+   (Participants included) disappear from the accessibility tree entirely
+   once Zoom loses focus. The script calls `activate` first.
+2. **The list is virtualized** (an `AXOutline`, like a table view) — only
+   rows currently scrolled into view are readable; off-screen rows throw
+   `Invalid index`. The script drives the scroll bar through a spread of
+   positions and unions the names seen at each stop.
+
+This only needs the Participants panel to be open in Zoom — no click-through
+menu required, so it works for any participant regardless of host/co-host
+status.
 
 **Confident matches only.** Each Zoom participant name is matched against
 the roster by, in order: embedded institute roll number (if a student named
@@ -61,6 +74,17 @@ ambiguity check against the second-best match. Anything short of that is
 reported as **unmatched** and never written — see the "review manually"
 section of the tool's output. Wrong-but-confident is a much worse failure
 mode than incomplete-but-flagged in a shared, admin-owned sheet.
+
+Name matching also strips institute boilerplate before comparing — verified
+against a real participant list, many students suffix their Zoom name with
+things like `- MSDSM Batch 06` or an application reference number, which
+would otherwise dilute token-overlap scoring enough to push a genuine,
+unambiguous match (`"Jane"` → `"Jane Doe"`, `"John Smith"` →
+`"Jonathan John Smith"`) below threshold. `lib/match.mjs` strips known
+noise tokens and treats "every word of the shorter name appears in the
+longer one" as a strong (not perfect) signal, so real partial names match
+while still leaving the ambiguity-margin check able to catch an actual
+same-first-name collision.
 
 **Dry run by default.** The tool always prints its full plan (detected
 subject, target session column, matched/unmatched participants, what would
@@ -86,18 +110,25 @@ files, e.g. during testing — never used against real data). First run opens
 a browser tab for one-time consent; after that it's cached in
 `~/.attendance-sync/google-oauth-token.json`.
 
+**macOS Accessibility permission:** the Terminal (or whatever runs this
+script) needs Accessibility access under System Settings → Privacy &
+Security → Accessibility, so `osascript`/System Events can read Zoom's
+Participants window. If the tool errors saying it can't find that window
+while Zoom is clearly open with the panel visible, check this first.
+
 ## Running it
 
 During or right after a live class:
 
-1. In Zoom: **Participants** panel → **"..."** → **Copy Participant List**.
+1. In Zoom, open the **Participants** panel (just needs to be open — no
+   menu clicks needed) and leave it open.
 2. Run:
    ```bash
    node mark-attendance.mjs
    ```
    This auto-detects today's subject from the schedule + current time, reads
-   the participant list off your clipboard, matches names against the
-   roster, and prints the full plan — **without writing anything**.
+   the live participant list from Zoom, matches names against the roster,
+   and prints the full plan — **without writing anything**.
 3. Review the output, especially the "NOT matched" section (guests, faculty,
    typo'd names — anyone who needs manual handling).
 4. If it looks right:
@@ -105,7 +136,7 @@ During or right after a live class:
    node mark-attendance.mjs --apply
    ```
    (Re-run steps 1–4 from scratch — the auto-detected subject/session and
-   the clipboard contents are both re-read on `--apply`, so there's no
+   the participant list are both re-read on `--apply`, so there's no
    stale-plan risk between the dry run and the real write.)
 
 **Useful flags:**
@@ -113,7 +144,7 @@ During or right after a live class:
 ```bash
 --subject ME              # override auto-detected subject (abbreviation or "DSM 107")
 --session 5               # override auto-picked session column
---participants-file p.txt # read the participant list from a file instead of the clipboard
+--participants-file p.txt # read the participant list from a file instead of Zoom directly
 --apply                   # actually write (default is dry-run)
 --config path/to/other.json
 ```
