@@ -2,6 +2,11 @@
 // Marks Zoom-class attendance into the MSDSM coursewise attendance sheet.
 //
 // Pipeline:
+//   0. If not already in the configured Zoom meeting (and not reading from
+//      --participants-file), join it muted/video-off, and leave again at
+//      the end -- but only if we're the one who joined. A meeting already
+//      running when this starts is left exactly as found. See
+//      lib/zoomMeeting.mjs for how join/leave/mute are actually driven.
 //   1. Read the schedule .xlsx (Drive, view-only) -> figure out which
 //      subject(s) plausibly correspond to "the class we're in / just
 //      finished", from today's date + current time vs the configured slots.
@@ -20,7 +25,8 @@
 //   node mark-attendance.mjs --apply                # actually writes to the sheet
 //   node mark-attendance.mjs --subject ME           # override auto-detected subject (abbreviation or "DSM 107")
 //   node mark-attendance.mjs --session 5            # override auto-picked session column
-//   node mark-attendance.mjs --participants-file p.txt   # read participant list from a file instead of Zoom directly
+//   node mark-attendance.mjs --participants-file p.txt   # read participant list from a file, skipping Zoom entirely
+//   node mark-attendance.mjs --no-leave             # don't auto-leave even if we're the one who joined
 //   node mark-attendance.mjs --config path/to/config.json
 
 import { google } from "googleapis";
@@ -34,9 +40,11 @@ import { fetchScheduleWorkbook, parseTimetable, parseLegend, findCandidateSessio
 import { listSubjectTabs, loadTab, pickActiveTab, writePresent } from "./lib/attendanceSheet.mjs";
 import { loadParticipants } from "./lib/participants.mjs";
 import { matchParticipant } from "./lib/match.mjs";
+import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
+const NO_LEAVE = args.includes("--no-leave");
 const flagValue = (name) => {
   const idx = args.indexOf(name);
   return idx !== -1 ? args[idx + 1] : undefined;
@@ -118,6 +126,22 @@ async function main() {
   const drive = google.drive({ version: "v3", auth: authClient });
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+
+  // Only touch Zoom at all if we're actually going to read participants
+  // live from it -- --participants-file needs no meeting open. If a
+  // meeting's already running (the common case: running this right after
+  // class), leave it exactly as we found it -- no join, no leave.
+  let joinedByUs = false;
+  if (!PARTICIPANTS_FILE) {
+    if (!isInMeeting()) {
+      console.log(`Not currently in a meeting -- joining ${config.zoom.meetingLink} ...`);
+      await joinMeeting(config.zoom.meetingLink, { timeoutSeconds: config.zoom.joinTimeoutSeconds });
+      joinedByUs = true;
+      ensureMutedAndVideoOff();
+      console.log("Joined (muted, video off).");
+    }
+    ensureParticipantsPanelOpen();
+  }
 
   try {
     const subjectCode = await pickSubject(config, drive, rl);
@@ -208,6 +232,14 @@ async function main() {
     });
   } finally {
     rl.close();
+    if (joinedByUs && !NO_LEAVE) {
+      console.log("\nLeaving the meeting (we're the ones who joined it)...");
+      try {
+        await leaveMeeting();
+      } catch (err) {
+        console.error(`Couldn't confirm leaving the meeting: ${err.message}`);
+      }
+    }
   }
 }
 

@@ -94,6 +94,22 @@ be written) without touching the sheet. Pass `--apply` to actually write.
 get written; an already-`"Present"` cell is left alone. Re-running the same
 session's marking run twice is always safe.
 
+**Joins/leaves the meeting only if it has to.** If Zoom isn't already in the
+configured meeting when this runs (and `--participants-file` isn't given),
+`lib/zoomMeeting.mjs` joins it (muted, video off), runs the whole pipeline,
+then leaves again -- but only because it's the one who joined. A meeting
+already running when the script starts is left exactly as found, untouched,
+whether it finishes normally or errors out. Two different accessibility
+mechanisms are used deliberately: menu bar items (stable, used for
+mute/video-off and for checking whether a meeting is active) vs. toolbar
+buttons like Participants/Leave (not exposed to accessibility at all until
+the mouse hovers over them -- driven with real synthetic mouse movement via
+`cliclick`, at points computed as fixed offsets from the meeting window's
+edges rather than raw screen coordinates, since Zoom's toolbar doesn't
+stretch with window size). All of this was worked out and verified against
+a real live class, including the join dialog, the leave confirmation popup,
+and the "not in a meeting" idle state -- not assumed from documentation.
+
 ## One-time setup
 
 ```bash
@@ -116,35 +132,56 @@ Security → Accessibility, so `osascript`/System Events can read Zoom's
 Participants window. If the tool errors saying it can't find that window
 while Zoom is clearly open with the panel visible, check this first.
 
+**`cliclick`** (`brew install cliclick`): needed for the toolbar-button
+clicks (Participants/Leave) described above -- System Events alone can't
+synthesize real mouse movement, and Zoom's toolbar needs that to reveal
+itself before anything can click it.
+
+**Zoom's "Always show this preview when joining" setting:** if enabled
+(Zoom Settings → General), joining shows a pre-join camera/mic preview
+dialog that needs a manual "Join" click -- `joinMeeting()` deliberately
+doesn't click through it (an unverified dialog isn't worth guessing at), so
+it'll just time out. Turn this off for unattended runs. Zoom's "mute my
+microphone"/"turn off my video when joining" settings (Settings →
+Audio/Video) are also worth enabling directly -- `ensureMutedAndVideoOff()`
+enforces the same result via the Meeting menu regardless, but the setting
+is one less thing that has to go right.
+
 ## Running it
 
-During or right after a live class:
+Just run it during or right after a live class:
 
-1. In Zoom, open the **Participants** panel (just needs to be open — no
-   menu clicks needed) and leave it open.
-2. Run:
-   ```bash
-   node mark-attendance.mjs
-   ```
-   This auto-detects today's subject from the schedule + current time, reads
-   the live participant list from Zoom, matches names against the roster,
-   and prints the full plan — **without writing anything**.
-3. Review the output, especially the "NOT matched" section (guests, faculty,
+```bash
+node mark-attendance.mjs
+```
+
+If Zoom isn't already in the class meeting, it joins (muted, video off,
+using `config.json`'s `zoom.meetingLink`), opens the Participants panel, and
+leaves again when done. If you're already in the meeting, it just opens the
+panel if needed and leaves the meeting running afterward -- your call on
+whether to stay. Either way it then auto-detects today's subject from the
+schedule + current time, reads the live participant list, matches names
+against the roster, and prints the full plan — **without writing anything**.
+
+1. Review the output, especially the "NOT matched" section (guests, faculty,
    typo'd names — anyone who needs manual handling).
-4. If it looks right:
+2. If it looks right:
    ```bash
    node mark-attendance.mjs --apply
    ```
-   (Re-run steps 1–4 from scratch — the auto-detected subject/session and
-   the participant list are both re-read on `--apply`, so there's no
-   stale-plan risk between the dry run and the real write.)
+   (This re-runs the whole thing from scratch — subject/session detection
+   and the participant list are both re-read on `--apply`, so there's no
+   stale-plan risk between the dry run and the real write. If it had to
+   join for the dry run, it already left afterward, so this may join again
+   — a few seconds' overhead, worth it for never acting on a stale read.)
 
 **Useful flags:**
 
 ```bash
 --subject ME              # override auto-detected subject (abbreviation or "DSM 107")
 --session 5               # override auto-picked session column
---participants-file p.txt # read the participant list from a file instead of Zoom directly
+--participants-file p.txt # read the participant list from a file, skipping Zoom entirely (no join/leave)
+--no-leave                # don't auto-leave even if this run is the one that joined
 --apply                   # actually write (default is dry-run)
 --config path/to/other.json
 ```

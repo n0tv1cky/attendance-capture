@@ -52,6 +52,11 @@
   "liveBufferMinutes": 15,
   "slotGraceMinutes": 180,
 
+  "zoom": {
+    "meetingLink": "<YOUR_ZOOM_MEETING_LINK>",
+    "joinTimeoutSeconds": 45
+  },
+
   "googleOAuth": {
     "clientSecretFile": "./oauth-client.json",
     "tokenFile": "~/.attendance-sync/google-oauth-token.json"
