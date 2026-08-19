@@ -25,15 +25,26 @@ maintains specifically for coursewise attendance — one tab per subject code,
 students as rows, "Session N" columns filled in as classes happen. That's
 what `config.json`'s `attendanceSheet` points at.
 
-**Session number comes from the sheet, not the schedule.** The schedule's
-timetable cells are inconsistent about where a session number lives — some
-subjects put it in parens (`DSM 101 (2)`), others glue it to the abbreviation
-(`ME-1`, `SM3`, `MP-3`). Rather than trust that formatting to always parse
-correctly, this tool only uses the schedule to identify *which subject* is
-running; it picks the actual target "Session N" column by looking at the
-attendance sheet's own state (first partially-filled column, else first
-fully-blank one). This is also what makes re-running mid-session safe: it
-tops up the same column instead of guessing wrong and creating a new one.
+**Session number comes from counting the schedule, not from parsing a
+number out of it, and not from the attendance sheet's fill state either.**
+The schedule's timetable cells are inconsistent about where a session
+number lives — some subjects put it in parens (`DSM 101 (2)`), others glue
+it to the abbreviation (`ME-1`, `SM3`, `MP-3`) — so this tool never reads a
+number out of the cell text at all. Instead `countSessionOccurrences` in
+`lib/schedule.mjs` counts how many times the subject has appeared in the
+timetable, chronologically, up to and including today; that count *is* the
+session number, since the sheet's columns get filled in the same order the
+class actually meets.
+
+An earlier version instead picked the target column by the attendance
+sheet's own fill state (a column with some rows filled and some blank =
+"today, in progress"). That has a real failure mode, caught before it ever
+shipped a wrong write: a past session with one genuine permanent absentee
+is indistinguishable, from cell contents alone, from a column someone just
+started filling in a minute ago — both are "some filled, some blank," and
+there's no way to tell "in progress" from "permanently incomplete" without
+knowing *when* each row was written, which the Sheets API doesn't expose
+per-cell. Counting the schedule sidesteps needing that entirely.
 
 **DSM 101 has two tabs that are NOT two rosters.** `DSM 101(1 to 20)` and
 `DSM 101(21 to 40)` look like a student roll-number split by name, but both

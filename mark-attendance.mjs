@@ -36,7 +36,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 
 import { getGoogleAuthClient } from "./lib/googleAuth.mjs";
-import { fetchScheduleWorkbook, parseTimetable, parseLegend, findCandidateSessions } from "./lib/schedule.mjs";
+import { fetchScheduleWorkbook, parseTimetable, parseLegend, findCandidateSessions, countSessionOccurrences } from "./lib/schedule.mjs";
 import { listSubjectTabs, loadTab, pickActiveTab, writePresent } from "./lib/attendanceSheet.mjs";
 import { loadParticipants } from "./lib/participants.mjs";
 import { matchParticipant } from "./lib/match.mjs";
@@ -78,14 +78,12 @@ function appendLog(logFile, entry) {
   fs.appendFileSync(logFile, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
 }
 
-async function pickSubject(config, drive, rl) {
-  if (SUBJECT_OVERRIDE) {
-    const resolved = resolveSubjectArg(SUBJECT_OVERRIDE, config.subjectCodeMap);
-    if (!resolved) throw new Error(`--subject "${SUBJECT_OVERRIDE}" isn't a known abbreviation or "DSM <N>" code.`);
-    console.log(`Using --subject override: ${resolved}`);
-    return resolved;
-  }
-
+// Fetches + parses the schedule once, needed both for subject auto-detection
+// and for computing the authoritative session number (see
+// countSessionOccurrences in lib/schedule.mjs) -- skipped entirely only when
+// both --subject and --session are given explicitly, since nothing in this
+// run would use it.
+async function loadTimetable(config, drive) {
   console.log("Reading schedule sheet...");
   const workbook = await fetchScheduleWorkbook(drive, config.scheduleFile.id);
   const timetableRows = parseTimetable(workbook, config.scheduleFile.sheetName, config.scheduleFile.legendMarker);
@@ -95,6 +93,16 @@ async function pickSubject(config, drive, rl) {
     if (config.subjectCodeMap[abbrev] && config.subjectCodeMap[abbrev] !== code) {
       console.warn(`WARNING: config.json's subjectCodeMap["${abbrev}"] = "${config.subjectCodeMap[abbrev]}" but the schedule's own legend says "${code}" -- update config.json if the schedule changed.`);
     }
+  }
+  return timetableRows;
+}
+
+async function pickSubject(config, timetableRows, rl) {
+  if (SUBJECT_OVERRIDE) {
+    const resolved = resolveSubjectArg(SUBJECT_OVERRIDE, config.subjectCodeMap);
+    if (!resolved) throw new Error(`--subject "${SUBJECT_OVERRIDE}" isn't a known abbreviation or "DSM <N>" code.`);
+    console.log(`Using --subject override: ${resolved}`);
+    return resolved;
   }
 
   const { todayRow, candidates, allToday, tier } = findCandidateSessions(timetableRows, config, new Date());
@@ -144,7 +152,21 @@ async function main() {
   }
 
   try {
-    const subjectCode = await pickSubject(config, drive, rl);
+    // Skip the schedule fetch entirely only when nothing in this run would
+    // use it (both subject and session pinned explicitly).
+    const timetableRows = SUBJECT_OVERRIDE && SESSION_OVERRIDE != null ? null : await loadTimetable(config, drive);
+
+    const subjectCode = await pickSubject(config, timetableRows, rl);
+
+    // The session number is derived from the schedule (how many times this
+    // subject has met, chronologically, up to today), not from the
+    // attendance sheet's own fill state -- see countSessionOccurrences in
+    // lib/schedule.mjs for why: a fill-based "which column looks partially
+    // done" heuristic can't distinguish "today's column, partly filled so
+    // far" from "a past column with a genuine permanent absentee," and will
+    // silently pick the wrong one. --session still wins if given explicitly.
+    const sessionNumber = SESSION_OVERRIDE ?? countSessionOccurrences(timetableRows, subjectCode, config, new Date());
+    console.log(`Session number: ${sessionNumber}${SESSION_OVERRIDE != null ? " (--session override)" : ` (${subjectCode} has met ${sessionNumber} time(s) up to today, per the schedule)`}`);
 
     console.log(`\nLoading roster tab(s) for ${subjectCode}...`);
     const tabsBySubject = await listSubjectTabs(sheets, config.attendanceSheet.id, Object.values(config.subjectCodeMap));
@@ -162,11 +184,7 @@ async function main() {
     // see lib/attendanceSheet.mjs' pickActiveTab) -- so exactly one tab is
     // "active" for this run, and matching happens against that tab alone to
     // avoid double-counting the same student appearing in every tab.
-    const active = pickActiveTab(tabs, SESSION_OVERRIDE);
-    if (!active) {
-      throw new Error(`Every known Session column across ${tabTitles.join(", ")} is already full -- add a new column to the sheet before running again.`);
-    }
-    const { tab, targetCol } = active;
+    const { tab, targetCol } = pickActiveTab(tabs, sessionNumber);
     console.log(`  active tab: "${tab.tabTitle}" -> Session ${targetCol.sessionNumber} (${tab.students.length} students)`);
 
     console.log(`\nReading participant list${PARTICIPANTS_FILE ? ` from ${PARTICIPANTS_FILE}` : " from Zoom (accessibility read)"}...`);
