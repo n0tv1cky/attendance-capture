@@ -151,15 +151,14 @@ async function main() {
 
     const matched = [];
     const unmatched = [];
-    const excludedByRole = [];
+    const excluded = [];
     const seenRows = new Set();
     for (const p of participants) {
-      if (p.role === "host" || p.role === "co-host") {
-        // Zoom's own role tag, not a name guess -- verified live that every
-        // non-student participant (AV/recording accounts, faculty) carries
-        // one of these, so they're routed here instead of into the
-        // "needs review" bucket. See lib/participants.mjs for the reasoning.
-        excludedByRole.push({ participant: p.raw, role: p.role });
+      if (p.excludeReason) {
+        // Not a name guess -- Zoom's own (Host)/(Co-host) role tag, or a
+        // "Prof"/"Dr" title prefix. See lib/participants.mjs for why both
+        // signals are used and why neither is a hardcoded name list.
+        excluded.push({ participant: p.raw, reason: p.excludeReason });
         continue;
       }
       const result = matchParticipant(p, tab.students, config.matching);
@@ -174,9 +173,9 @@ async function main() {
 
     console.log(`\nMatched ${matched.length}/${participants.length} participant(s):`);
     for (const m of matched) console.log(`  [${m.method}${m.score < 1 ? ` ${m.score.toFixed(2)}` : ""}] "${m.participant}" -> ${m.student.name} (${m.student.rollNumber})`);
-    if (excludedByRole.length > 0) {
-      console.log(`\n${excludedByRole.length} excluded as non-student (Zoom ${excludedByRole.length === 1 ? "role tag" : "role tags"} -- host/co-host, nothing to do):`);
-      for (const e of excludedByRole) console.log(`  "${e.participant}"`);
+    if (excluded.length > 0) {
+      console.log(`\n${excluded.length} excluded as non-student (nothing to do):`);
+      for (const e of excluded) console.log(`  "${e.participant}" -- ${e.reason}`);
     }
     if (unmatched.length > 0) {
       console.log(`\n${unmatched.length} participant(s) NOT matched (not written -- review manually):`);
@@ -201,7 +200,7 @@ async function main() {
       sessionNumber: targetCol.sessionNumber,
       participantsCount: participants.length,
       matchedCount: matched.length,
-      excludedByRoleCount: excludedByRole.length,
+      excludedCount: excluded.length,
       unmatchedCount: unmatched.length,
       written,
       unmatched: unmatched.map((u) => u.participant),
