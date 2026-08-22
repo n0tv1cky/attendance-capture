@@ -41,6 +41,7 @@ import { listSubjectTabs, loadTab, pickActiveTab, writePresent } from "./lib/att
 import { loadParticipants } from "./lib/participants.mjs";
 import { matchParticipant } from "./lib/match.mjs";
 import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
+import { makeRunId, logRun, logParticipants } from "./lib/analytics.mjs";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
@@ -63,7 +64,8 @@ function loadConfig() {
   const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
   raw.googleOAuth.clientSecretFile = path.resolve(configDir, raw.googleOAuth.clientSecretFile);
   raw.googleOAuth.tokenFile = expandHome(raw.googleOAuth.tokenFile);
-  raw.logFile = expandHome(raw.logFile);
+  raw.logging.runsLogFile = expandHome(raw.logging.runsLogFile);
+  raw.logging.participantsLogFile = expandHome(raw.logging.participantsLogFile);
   return raw;
 }
 
@@ -71,11 +73,6 @@ function resolveSubjectArg(rawArg, subjectCodeMap) {
   const s = rawArg.trim();
   if (/^DSM\s*\d{3}$/i.test(s)) return `DSM ${s.match(/\d{3}/)[0]}`;
   return subjectCodeMap[s.toUpperCase()] ?? null;
-}
-
-function appendLog(logFile, entry) {
-  fs.mkdirSync(path.dirname(logFile), { recursive: true });
-  fs.appendFileSync(logFile, JSON.stringify({ at: new Date().toISOString(), ...entry }) + "\n");
 }
 
 // Fetches + parses the schedule once, needed both for subject auto-detection
@@ -97,12 +94,16 @@ async function loadTimetable(config, drive) {
   return timetableRows;
 }
 
+// Returns { subjectCode, detection: "override"|"auto-live"|"auto-recent"|"manual-prompt", scheduleSlot }
+// -- scheduleSlot (label/rawCell/tier) is null for "override", populated
+// otherwise, for the run log to capture exactly how the subject was decided
+// without having to re-derive it from prose.
 async function pickSubject(config, timetableRows, rl) {
   if (SUBJECT_OVERRIDE) {
     const resolved = resolveSubjectArg(SUBJECT_OVERRIDE, config.subjectCodeMap);
     if (!resolved) throw new Error(`--subject "${SUBJECT_OVERRIDE}" isn't a known abbreviation or "DSM <N>" code.`);
     console.log(`Using --subject override: ${resolved}`);
-    return resolved;
+    return { subjectCode: resolved, detection: "override", scheduleSlot: null };
   }
 
   const { todayRow, candidates, allToday, tier } = findCandidateSessions(timetableRows, config, new Date());
@@ -113,7 +114,7 @@ async function pickSubject(config, timetableRows, rl) {
     const c = candidates[0];
     const tierDesc = tier === "live" ? "is happening right now" : "ended a while ago but is the most recent class today";
     console.log(`Auto-detected: ${c.subjectCode} (${c.slot.label}, "${c.rawCell}") ${tierDesc}.`);
-    return c.subjectCode;
+    return { subjectCode: c.subjectCode, detection: `auto-${tier}`, scheduleSlot: { label: c.slot.label, rawCell: c.rawCell, tier } };
   }
 
   console.log("\nCouldn't auto-detect a single current class. Today's scheduled classes:");
@@ -124,7 +125,7 @@ async function pickSubject(config, timetableRows, rl) {
   const answer = await rl.question("\nEnter the subject code/abbreviation to use (or Ctrl+C to abort): ");
   const resolved = resolveSubjectArg(answer, config.subjectCodeMap);
   if (!resolved) throw new Error(`"${answer}" isn't a known abbreviation or "DSM <N>" code.`);
-  return resolved;
+  return { subjectCode: resolved, detection: "manual-prompt", scheduleSlot: null };
 }
 
 async function main() {
@@ -151,12 +152,15 @@ async function main() {
     ensureParticipantsPanelOpen();
   }
 
+  const runId = makeRunId();
+  const runStartedAt = Date.now();
+
   try {
     // Skip the schedule fetch entirely only when nothing in this run would
     // use it (both subject and session pinned explicitly).
     const timetableRows = SUBJECT_OVERRIDE && SESSION_OVERRIDE != null ? null : await loadTimetable(config, drive);
 
-    const subjectCode = await pickSubject(config, timetableRows, rl);
+    const { subjectCode, detection: subjectDetection, scheduleSlot } = await pickSubject(config, timetableRows, rl);
 
     // The session number is derived from the schedule (how many times this
     // subject has met, chronologically, up to today), not from the
@@ -165,6 +169,7 @@ async function main() {
     // done" heuristic can't distinguish "today's column, partly filled so
     // far" from "a past column with a genuine permanent absentee," and will
     // silently pick the wrong one. --session still wins if given explicitly.
+    const sessionDetection = SESSION_OVERRIDE != null ? "override" : "schedule-occurrence-count";
     const sessionNumber = SESSION_OVERRIDE ?? countSessionOccurrences(timetableRows, subjectCode, config, new Date());
     console.log(`Session number: ${sessionNumber}${SESSION_OVERRIDE != null ? " (--session override)" : ` (${subjectCode} has met ${sessionNumber} time(s) up to today, per the schedule)`}`);
 
@@ -187,34 +192,59 @@ async function main() {
     const { tab, targetCol } = pickActiveTab(tabs, sessionNumber);
     console.log(`  active tab: "${tab.tabTitle}" -> Session ${targetCol.sessionNumber} (${tab.students.length} students)`);
 
+    const participantSource = PARTICIPANTS_FILE ? "file" : "zoom-accessibility";
     console.log(`\nReading participant list${PARTICIPANTS_FILE ? ` from ${PARTICIPANTS_FILE}` : " from Zoom (accessibility read)"}...`);
     const participants = loadParticipants({ participantsFile: PARTICIPANTS_FILE });
     console.log(`  ${participants.length} participant(s) found.`);
 
+    // One record per participant seen, whatever the outcome -- this is what
+    // makes "was student X really matched present on date Y, and how
+    // confidently" answerable later without re-deriving it from terminal
+    // scrollback. Built inline for excluded/unmatched/duplicate (nothing
+    // more to learn about those after this point); matched participants get
+    // their alreadyMarked/written fields filled in below, once known.
+    const participantRecords = [];
+    const baseRecord = (p) => ({ runId, subjectCode, tab: tab.tabTitle, sessionNumber: targetCol.sessionNumber, participantRaw: p.raw, participantCleaned: p.cleaned });
+
     const matched = [];
     const unmatched = [];
     const excluded = [];
-    const seenRows = new Set();
+    const seenRows = new Map(); // rowIndex -> raw participant name first matched to it
     for (const p of participants) {
       if (p.excludeReason) {
         // Not a name guess -- Zoom's own (Host)/(Co-host) role tag, or a
         // "Prof"/"Dr" title prefix. See lib/participants.mjs for why both
         // signals are used and why neither is a hardcoded name list.
         excluded.push({ participant: p.raw, reason: p.excludeReason });
+        participantRecords.push({ ...baseRecord(p), outcome: "excluded", excludeReason: p.excludeReason });
         continue;
       }
       const result = matchParticipant(p, tab.students, config.matching);
       if (result.method === "unmatched") {
         unmatched.push({ participant: p.raw, reason: result.reason });
+        participantRecords.push({ ...baseRecord(p), outcome: "unmatched", unmatchedReason: result.reason });
         continue;
       }
-      if (seenRows.has(result.student.rowIndex)) continue; // e.g. same student joined from two devices
-      seenRows.add(result.student.rowIndex);
-      matched.push({ participant: p.raw, student: result.student, method: result.method, score: result.score });
+      if (seenRows.has(result.student.rowIndex)) {
+        // e.g. same student joined from two devices -- logged, not silently
+        // dropped, since "who joined twice" is its own useful signal.
+        participantRecords.push({
+          ...baseRecord(p),
+          outcome: "duplicate-device",
+          matchMethod: result.method,
+          matchScore: result.score,
+          matchedStudentName: result.student.name,
+          matchedStudentRoll: result.student.rollNumber,
+          firstSeenAsParticipant: seenRows.get(result.student.rowIndex),
+        });
+        continue;
+      }
+      seenRows.set(result.student.rowIndex, p.raw);
+      matched.push({ participant: p, student: result.student, method: result.method, score: result.score });
     }
 
     console.log(`\nMatched ${matched.length}/${participants.length} participant(s):`);
-    for (const m of matched) console.log(`  [${m.method}${m.score < 1 ? ` ${m.score.toFixed(2)}` : ""}] "${m.participant}" -> ${m.student.name} (${m.student.rollNumber})`);
+    for (const m of matched) console.log(`  [${m.method}${m.score < 1 ? ` ${m.score.toFixed(2)}` : ""}] "${m.participant.raw}" -> ${m.student.name} (${m.student.rollNumber})`);
     if (excluded.length > 0) {
       console.log(`\n${excluded.length} excluded as non-student (nothing to do):`);
       for (const e of excluded) console.log(`  "${e.participant}" -- ${e.reason}`);
@@ -224,30 +254,62 @@ async function main() {
       for (const u of unmatched) console.log(`  "${u.participant}" -- ${u.reason}`);
     }
 
+    for (const m of matched) {
+      const cellValue = String(tab.students.find((s) => s.rowIndex === m.student.rowIndex).values[targetCol.index] ?? "").trim();
+      m.alreadyMarked = Boolean(cellValue);
+    }
     const rowsToMark = matched.map((m) => m.student.rowIndex);
-    const alreadyMarked = rowsToMark.filter((r) => String(tab.students.find((s) => s.rowIndex === r).values[targetCol.index] ?? "").trim());
-    console.log(`\n${tab.tabTitle}: Session ${targetCol.sessionNumber} -- ${rowsToMark.length} matched student(s), ${alreadyMarked.length} already marked (skipped), ${rowsToMark.length - alreadyMarked.length} to write.`);
+    const alreadyMarkedCount = matched.filter((m) => m.alreadyMarked).length;
+    console.log(`\n${tab.tabTitle}: Session ${targetCol.sessionNumber} -- ${rowsToMark.length} matched student(s), ${alreadyMarkedCount} already marked (skipped), ${rowsToMark.length - alreadyMarkedCount} to write.`);
 
-    if (!APPLY) {
+    let written = 0;
+    let writtenRowIndices = [];
+    if (APPLY) {
+      ({ written, writtenRowIndices } = await writePresent(sheets, config.attendanceSheet.id, tab, targetCol, rowsToMark, config.attendanceSheet.presentValue));
+      console.log(`\nWrote "${config.attendanceSheet.presentValue}" for ${written} student(s).`);
+    } else {
       console.log("\nDry run only -- nothing written. Re-run with --apply to write these to the sheet.");
-      return;
+    }
+    const writtenSet = new Set(writtenRowIndices);
+
+    for (const m of matched) {
+      participantRecords.push({
+        ...baseRecord(m.participant),
+        outcome: "matched",
+        matchMethod: m.method,
+        matchScore: m.score,
+        matchedStudentName: m.student.name,
+        matchedStudentRoll: m.student.rollNumber,
+        matchedRowIndex: m.student.rowIndex,
+        alreadyMarked: m.alreadyMarked,
+        wouldWrite: !m.alreadyMarked,
+        written: writtenSet.has(m.student.rowIndex),
+      });
     }
 
-    const { written } = await writePresent(sheets, config.attendanceSheet.id, tab, targetCol, rowsToMark, config.attendanceSheet.presentValue);
-    console.log(`\nWrote "${config.attendanceSheet.presentValue}" for ${written} student(s).`);
-
-    appendLog(config.logFile, {
+    logRun(config.logging.runsLogFile, {
+      runId,
+      term: config.term,
+      apply: APPLY,
       subjectCode,
+      subjectDetection,
+      scheduleSlot,
       tab: tab.tabTitle,
       sessionNumber: targetCol.sessionNumber,
+      sessionDetection,
+      participantSource,
+      participantsFile: PARTICIPANTS_FILE ?? null,
       participantsCount: participants.length,
       matchedCount: matched.length,
       excludedCount: excluded.length,
       unmatchedCount: unmatched.length,
-      written,
-      unmatched: unmatched.map((u) => u.participant),
-      apply: APPLY,
+      duplicateCount: participantRecords.filter((r) => r.outcome === "duplicate-device").length,
+      alreadyMarkedCount,
+      writtenCount: written,
+      zoomAutoJoined: joinedByUs,
+      durationMs: Date.now() - runStartedAt,
     });
+    logParticipants(config.logging.participantsLogFile, participantRecords);
   } finally {
     rl.close();
     if (joinedByUs && !NO_LEAVE) {

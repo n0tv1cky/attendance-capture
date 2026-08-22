@@ -67,5 +67,8 @@
     "ambiguityMargin": 0.05
   },
 
-  "logFile": "~/.attendance-sync/mark-attendance.log.jsonl"
+  "logging": {
+    "runsLogFile": "~/.attendance-sync/runs.jsonl",
+    "participantsLogFile": "~/.attendance-sync/participants.jsonl"
+  }
 }

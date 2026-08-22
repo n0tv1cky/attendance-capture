@@ -204,10 +204,39 @@ of guessing.
 
 ## Logging
 
-Every run (dry-run and `--apply`) appends a line to
-`~/.attendance-sync/mark-attendance.log.jsonl` — subject, tab, session
-number, match/write counts, and the list of unmatched names. Useful for
-auditing what happened on a given day without re-deriving it from the sheet.
+Every run (dry-run and `--apply`) writes to two linked JSONL files under
+`~/.attendance-sync/`, built specifically so questions like "was this
+student really marked present on this date, and how confidently" have a
+definitive answer without digging through terminal scrollback:
+
+- **`runs.jsonl`** — one row per invocation: subject/session detection
+  method (auto-live/auto-recent/override/manual-prompt), the schedule slot
+  that triggered it, participant source, aggregate counts, timing, and the
+  script's own git commit (for full reproducibility of *how* a given run
+  behaved).
+- **`participants.jsonl`** — one row per participant *seen* that run,
+  whatever the outcome (`matched`/`excluded`/`unmatched`/`duplicate-device`):
+  raw Zoom name, match method + confidence score, which roster row it
+  resolved to, whether that cell was already marked before this run, and
+  whether this run actually wrote to it (`written`; dry runs get `wouldWrite`
+  instead, so a dry run's "what would have happened" is distinguishable from
+  a real write).
+
+Both join on `runId`. JSONL rather than one nested file so each is
+independently `jq`-able and loads straight into pandas
+(`pd.read_json(path, lines=True)`) or DuckDB
+(`read_json_auto('participants.jsonl')`) as a clean, flat table. Example:
+
+```bash
+jq -c 'select(.matchedStudentRoll == "2604107004")' ~/.attendance-sync/participants.jsonl
+```
+
+answers "every time this roll number was matched, by what method, and was
+it actually written" — roll-number matches are the strongest signal
+available (that student's own roll number was in the live Zoom display
+name), but note that's still "a device joined claiming this identity," not
+independent proof of physical presence — worth keeping in mind for any
+integrity question, not something a log can resolve on its own.
 
 ## Using it next term
 
