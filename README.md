@@ -20,7 +20,7 @@ knowing before touching any of this:
 The roster file linked in early planning turned out to be view-only and
 isn't a native Sheet either, so it can't be written to at all. The actual
 target is a separate, already-editable sheet
-(`<YOUR_ATTENDANCE_SHEET_ID>`) that the MSDSM office
+(id in `config.local.json`'s `attendanceSheet.id`) that the MSDSM office
 maintains specifically for coursewise attendance — one tab per subject code,
 students as rows, "Session N" columns filled in as classes happen. That's
 what `config.json`'s `attendanceSheet` points at.

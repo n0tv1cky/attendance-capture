@@ -44,6 +44,7 @@ import { matchParticipant } from "./lib/match.mjs";
 import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
 import { makeRunId, logRun, logParticipants } from "./lib/analytics.mjs";
 import { sendNotification } from "./lib/notify.mjs";
+import { mergeLocalConfig } from "./lib/configLocal.mjs";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
@@ -71,7 +72,7 @@ function expandHome(p) {
 
 function loadConfig() {
   const configDir = path.dirname(CONFIG_PATH);
-  const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+  const raw = mergeLocalConfig(configDir, JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8")));
   raw.googleOAuth.clientSecretFile = path.resolve(configDir, raw.googleOAuth.clientSecretFile);
   raw.googleOAuth.tokenFile = expandHome(raw.googleOAuth.tokenFile);
   raw.logging.runsLogFile = expandHome(raw.logging.runsLogFile);
