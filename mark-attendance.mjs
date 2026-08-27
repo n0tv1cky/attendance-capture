@@ -44,6 +44,7 @@ import { matchParticipant } from "./lib/match.mjs";
 import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
 import { makeRunId, logRun, logParticipants } from "./lib/analytics.mjs";
 import { sendNotification } from "./lib/notify.mjs";
+import { buildSkippedEmail, buildRunEmail, buildFailedEmail } from "./lib/emailTemplate.mjs";
 import { mergeLocalConfig } from "./lib/configLocal.mjs";
 
 const args = process.argv.slice(2);
@@ -206,11 +207,7 @@ async function main() {
         skipInfo,
         durationMs: Date.now() - runStartedAt,
       });
-      const skipLabel = { "skipped-no-schedule": "no schedule entry for today", "skipped-none-live": "no class live right now", "skipped-ambiguous": "ambiguous" }[subjectDetection];
-      await sendNotification(config, {
-        subject: `Attendance: skipped (${skipLabel})`,
-        bodyLines: [skipInfo.reason, "", "Nothing was written; Zoom was never joined.", skipInfo.allToday ? `\nToday's scheduled classes:\n${skipInfo.allToday.map((c) => `  ${c.label}: ${c.subjectCode} [${c.rawCell}]`).join("\n")}` : ""],
-      });
+      await sendNotification(config, buildSkippedEmail({ subjectDetection, skipInfo }));
       return;
     }
 
@@ -379,17 +376,24 @@ async function main() {
     logParticipants(config.logging.participantsLogFile, participantRecords);
 
     if (UNATTENDED) {
-      const summary = `${subjectCode} ${tab.tabTitle} Session ${targetCol.sessionNumber}: ${matched.length}/${participants.length} matched, ${written} written, ${unmatched.length} unmatched, ${excluded.length} excluded.`;
-      await sendNotification(config, {
-        subject: `Attendance: ${APPLY ? "marked" : "dry-run"} ${subjectCode} S${targetCol.sessionNumber} (${written} written)`,
-        bodyLines: [
-          summary,
-          "",
-          unmatched.length > 0 ? `NOT matched (review manually):\n${unmatched.map((u) => `  "${u.participant}" -- ${u.reason}`).join("\n")}` : "Everyone present was matched.",
-          "",
-          `Detection: ${subjectDetection}${scheduleSlot ? ` (${scheduleSlot.label}, "${scheduleSlot.rawCell}")` : ""}; joined Zoom: ${joinedByUs}.`,
-        ],
-      });
+      await sendNotification(
+        config,
+        buildRunEmail({
+          apply: APPLY,
+          subjectCode,
+          tabTitle: tab.tabTitle,
+          sessionNumber: targetCol.sessionNumber,
+          participants,
+          matched,
+          unmatched,
+          excluded,
+          written,
+          alreadyMarkedCount,
+          subjectDetection,
+          scheduleSlot,
+          joinedByUs,
+        })
+      );
     }
   } finally {
     rl?.close();
@@ -409,7 +413,7 @@ main().catch(async (err) => {
   if (UNATTENDED) {
     try {
       const config = loadConfig();
-      await sendNotification(config, { subject: "Attendance: scheduled run FAILED", bodyLines: [err.message, "", "Nothing further was attempted -- run manually to investigate:", "  node mark-attendance.mjs"] });
+      await sendNotification(config, buildFailedEmail({ message: err.message }));
     } catch {
       // loadConfig()/sendNotification() failing here shouldn't mask the
       // original error or change the exit code below.
