@@ -238,6 +238,101 @@ name), but note that's still "a device joined claiming this identity," not
 independent proof of physical presence — worth keeping in mind for any
 integrity question, not something a log can resolve on its own.
 
+## Scheduled (unattended) runs
+
+Unlike the original design (see the section above and the top of this file
+-- "no launchd job... deliberately"), this is now automated: a LaunchAgent
+(`com.n0tv1cky.attendance-sync`) fires `node mark-attendance.mjs --apply
+--unattended` roughly 30 minutes after each class-slot start time from
+`config.json`'s `timeSlots`, every day of the week.
+
+**Why a LaunchAgent, not a LaunchDaemon**: this task has to run in your
+logged-in GUI session -- `ensureParticipantsPanelOpen()`/`joinMeeting()`/
+`leaveMeeting()` drive Zoom's actual UI via System Events + `cliclick`, which
+needs a real, unlocked screen to do anything. A LaunchDaemon (root, no GUI
+session) can't do this at all. There's also no lid-closed wake workaround
+here (unlike `scripts/zoom-recordings`) -- if the Mac is asleep or the screen
+is locked when a scheduled time fires, that run will fail, and there's no
+practical way around that for a task that fundamentally needs to click
+things in a visible Zoom window.
+
+**Why firing on every slot, every day, is safe (not spammy)**: the schedule
+here is purely a timing optimization, not the thing that decides "should
+this actually run" -- see docs/background-automation.md's "two independent
+gates" pattern. `mark-attendance.mjs`'s own schedule detection
+(`findCandidateSessions`) is what's authoritative. A firing that lands on a
+holiday, a slot with no class, or between classes just detects "nothing live
+right now," logs it, emails a one-line "skipped" report, and touches nothing
+-- no Zoom join, no sheet write.
+
+**`--unattended`** changes exactly two things from a normal `--apply` run:
+1. **No interactive prompt.** There's no TTY under launchd, so the
+   ambiguous-detection prompt (`rl.question(...)`) would otherwise hang
+   forever. Instead, whenever `pickSubject` can't resolve to exactly one
+   class -- either genuinely ambiguous (two slots equally live/recent at
+   once) or nothing live right now -- it logs the reason and returns without
+   ever touching Zoom or the sheet. See `pickSubject`'s `UNATTENDED` branch
+   in `mark-attendance.mjs` for the exact conditions.
+2. **Emails a report** for every outcome (skipped / written / failed) via
+   `lib/notify.mjs` -- reusing `zoom-recordings`' Gmail-send pattern
+   (`lib/gmailAuth.mjs`, its own `gmail.send`-only OAuth token, entirely
+   separate from this project's Sheets/Drive token; see that file's header
+   comment for why a new scope needs a brand-new token file). Manual runs
+   never email -- only `--unattended` does, since a human watching the
+   terminal doesn't need an email about what they just watched happen.
+
+### One-time setup for scheduled runs
+
+```bash
+# Gmail-send OAuth token, separate from the Sheets/Drive one above -- opens
+# a one-time browser consent tab.
+node -e '
+import("./lib/gmailAuth.mjs").then(({ getGmailAuthClient }) =>
+  getGmailAuthClient("./oauth-client.json", process.env.HOME + "/.attendance-sync/gmail-token.json"))'
+```
+
+`config.json`'s `notifications.toEmail` controls where reports go (defaults
+to your own institute email, from == to).
+
+### Redeploying after editing `run-scheduled.sh`
+
+Same TCC constraint as `zoom-recordings` (see
+docs/background-automation.md, gotcha #1): launchd executes the deployed
+copy outside `~/Documents`, not the repo file directly.
+
+```bash
+cp scripts/attendance/run-scheduled.sh ~/.attendance-sync/run-scheduled.sh
+```
+
+Editing the repo copy alone has no effect on the live job until this is done.
+
+### Changing the schedule
+
+If `config.json`'s `timeSlots` ever change (new term, different slot times),
+recompute the `StartCalendarInterval` entries in
+`com.n0tv1cky.attendance-sync.plist` (each is slot-start + 30 min, one dict
+per weekday/weekend-day + slot combination -- see the plist's own comment)
+and reload:
+
+```bash
+launchctl bootout gui/$(id -u)/com.n0tv1cky.attendance-sync
+cp scripts/attendance/com.n0tv1cky.attendance-sync.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.n0tv1cky.attendance-sync.plist
+```
+
+### Useful commands
+
+```bash
+launchctl print gui/$(id -u)/com.n0tv1cky.attendance-sync   # status
+launchctl kickstart gui/$(id -u)/com.n0tv1cky.attendance-sync   # trigger a run right now (for testing)
+tail -f ~/.attendance-sync/last-scheduled-run.log   # what a scheduled run actually did
+tail -f ~/.attendance-sync/launchd.log   # launchd's own stdout/stderr wrapper
+
+# Fully disable (e.g. term ended, or reverting to fully manual)
+launchctl bootout gui/$(id -u)/com.n0tv1cky.attendance-sync
+rm ~/Library/LaunchAgents/com.n0tv1cky.attendance-sync.plist
+```
+
 ## Using it next term
 
 Everything term-specific lives in `config.json`:

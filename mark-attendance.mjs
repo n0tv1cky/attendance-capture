@@ -28,6 +28,7 @@
 //   node mark-attendance.mjs --participants-file p.txt   # read participant list from a file, skipping Zoom entirely
 //   node mark-attendance.mjs --no-leave             # don't auto-leave even if we're the one who joined
 //   node mark-attendance.mjs --config path/to/config.json
+//   node mark-attendance.mjs --apply --unattended   # for the scheduled launchd job -- see below
 
 import { google } from "googleapis";
 import fs from "node:fs";
@@ -42,10 +43,19 @@ import { loadParticipants } from "./lib/participants.mjs";
 import { matchParticipant } from "./lib/match.mjs";
 import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
 import { makeRunId, logRun, logParticipants } from "./lib/analytics.mjs";
+import { sendNotification } from "./lib/notify.mjs";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 const NO_LEAVE = args.includes("--no-leave");
+// --unattended is for the scheduled launchd job only (see
+// docs/background-automation.md's pattern + scripts/attendance's own
+// launchd files): no readline prompt exists in that context (no TTY), so
+// instead of blocking forever on rl.question() when the schedule is
+// ambiguous or nothing's on today, it logs the outcome, emails a report via
+// lib/notify.mjs, and exits cleanly -- exactly the "skip and log" behavior
+// the interactive manual-prompt gives a human, minus the human.
+const UNATTENDED = args.includes("--unattended");
 const flagValue = (name) => {
   const idx = args.indexOf(name);
   return idx !== -1 ? args[idx + 1] : undefined;
@@ -66,6 +76,7 @@ function loadConfig() {
   raw.googleOAuth.tokenFile = expandHome(raw.googleOAuth.tokenFile);
   raw.logging.runsLogFile = expandHome(raw.logging.runsLogFile);
   raw.logging.participantsLogFile = expandHome(raw.logging.participantsLogFile);
+  raw.notifications.tokenFile = expandHome(raw.notifications.tokenFile);
   return raw;
 }
 
@@ -94,10 +105,12 @@ async function loadTimetable(config, drive) {
   return timetableRows;
 }
 
-// Returns { subjectCode, detection: "override"|"auto-live"|"auto-recent"|"manual-prompt", scheduleSlot }
+// Returns { subjectCode, detection: "override"|"auto-live"|"auto-recent"|"manual-prompt"|"skipped-no-schedule"|"skipped-ambiguous", scheduleSlot, skipInfo }
 // -- scheduleSlot (label/rawCell/tier) is null for "override", populated
 // otherwise, for the run log to capture exactly how the subject was decided
-// without having to re-derive it from prose.
+// without having to re-derive it from prose. subjectCode is null only for
+// the two "skipped-*" outcomes (--unattended only -- see below); skipInfo
+// carries what a human/notification needs to explain why.
 async function pickSubject(config, timetableRows, rl) {
   if (SUBJECT_OVERRIDE) {
     const resolved = resolveSubjectArg(SUBJECT_OVERRIDE, config.subjectCodeMap);
@@ -108,6 +121,10 @@ async function pickSubject(config, timetableRows, rl) {
 
   const { todayRow, candidates, allToday, tier } = findCandidateSessions(timetableRows, config, new Date());
   if (!todayRow) {
+    if (UNATTENDED) {
+      console.log("Today's date isn't in the schedule sheet -- skipping (unattended).");
+      return { subjectCode: null, detection: "skipped-no-schedule", scheduleSlot: null, skipInfo: { reason: "Today's date isn't in the schedule sheet." } };
+    }
     throw new Error("Today's date isn't in the schedule sheet. Pass --subject to skip auto-detection.");
   }
   if (candidates.length === 1) {
@@ -122,6 +139,27 @@ async function pickSubject(config, timetableRows, rl) {
   for (const c of allToday) console.log(`  ${c.slot.label} (${c.slot.start}-${c.slot.end}): ${c.subjectCode}  [raw: "${c.rawCell}"]`);
   if (candidates.length > 1) console.log(`\n${candidates.length} classes are equally "${tier}" right now -- ambiguous.`);
 
+  if (UNATTENDED) {
+    // Two distinct "can't auto-pick" outcomes, kept separately labeled so
+    // logs/emails don't call a quiet moment "ambiguous":
+    //   - true ambiguity: findCandidateSessions() returned >1 slot in the
+    //     same tier at once (ties within one tier aren't resolved
+    //     automatically -- see findCandidateSessions).
+    //   - nothing live: candidates.length === 0 -- no slot fell in either
+    //     the live or recent-grace window at this moment (the normal case
+    //     for most of the 18 scheduled firings/day, since each subject only
+    //     actually meets on some of them).
+    // Either way: no readline prompt exists in this context (no TTY --
+    // launchd), so don't guess. Log + notify + exit clean, exactly like
+    // "skip and log" would for a human choosing not to guess.
+    const isAmbiguous = candidates.length > 1;
+    const reason = isAmbiguous
+      ? `${candidates.length} classes (${candidates.map((c) => c.subjectCode).join(", ")}) are equally "${tier}" right now.`
+      : "No scheduled class slot is currently live or within its recent-grace window.";
+    console.log(`Skipping (unattended): ${reason}`);
+    return { subjectCode: null, detection: isAmbiguous ? "skipped-ambiguous" : "skipped-none-live", scheduleSlot: null, skipInfo: { reason, allToday: allToday.map((c) => ({ label: c.slot.label, subjectCode: c.subjectCode, rawCell: c.rawCell })) } };
+  }
+
   const answer = await rl.question("\nEnter the subject code/abbreviation to use (or Ctrl+C to abort): ");
   const resolved = resolveSubjectArg(answer, config.subjectCodeMap);
   if (!resolved) throw new Error(`"${answer}" isn't a known abbreviation or "DSM <N>" code.`);
@@ -134,33 +172,61 @@ async function main() {
   const sheets = google.sheets({ version: "v4", auth: authClient });
   const drive = google.drive({ version: "v3", auth: authClient });
 
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-
-  // Only touch Zoom at all if we're actually going to read participants
-  // live from it -- --participants-file needs no meeting open. If a
-  // meeting's already running (the common case: running this right after
-  // class), leave it exactly as we found it -- no join, no leave.
-  let joinedByUs = false;
-  if (!PARTICIPANTS_FILE) {
-    if (!isInMeeting()) {
-      console.log(`Not currently in a meeting -- joining ${config.zoom.meetingLink} ...`);
-      await joinMeeting(config.zoom.meetingLink, { timeoutSeconds: config.zoom.joinTimeoutSeconds });
-      joinedByUs = true;
-      ensureMutedAndVideoOff();
-      console.log("Joined (muted, video off).");
-    }
-    ensureParticipantsPanelOpen();
-  }
+  // No readline in --unattended (no TTY under launchd, and pickSubject
+  // never calls rl.question() in that mode anyway -- see there).
+  const rl = UNATTENDED ? null : readline.createInterface({ input: process.stdin, output: process.stdout });
 
   const runId = makeRunId();
   const runStartedAt = Date.now();
+  let joinedByUs = false;
 
   try {
-    // Skip the schedule fetch entirely only when nothing in this run would
-    // use it (both subject and session pinned explicitly).
+    // Schedule detection happens BEFORE touching Zoom at all, deliberately
+    // reordered from an earlier version that joined the meeting first: an
+    // --unattended run firing on a holiday/no-class day (or into an
+    // ambiguous window) should never even open Zoom. Skip the schedule
+    // fetch entirely only when nothing in this run would use it (both
+    // subject and session pinned explicitly).
     const timetableRows = SUBJECT_OVERRIDE && SESSION_OVERRIDE != null ? null : await loadTimetable(config, drive);
 
-    const { subjectCode, detection: subjectDetection, scheduleSlot } = await pickSubject(config, timetableRows, rl);
+    const { subjectCode, detection: subjectDetection, scheduleSlot, skipInfo } = await pickSubject(config, timetableRows, rl);
+
+    if (subjectCode === null) {
+      // --unattended skip path (see pickSubject): nothing to do, and
+      // nothing was touched (no Zoom join, no sheet write). Still logged +
+      // emailed, so a quiet day shows up in runs.jsonl/your inbox rather
+      // than just... not running.
+      logRun(config.logging.runsLogFile, {
+        runId,
+        term: config.term,
+        apply: APPLY,
+        subjectCode: null,
+        subjectDetection,
+        skipInfo,
+        durationMs: Date.now() - runStartedAt,
+      });
+      const skipLabel = { "skipped-no-schedule": "no schedule entry for today", "skipped-none-live": "no class live right now", "skipped-ambiguous": "ambiguous" }[subjectDetection];
+      await sendNotification(config, {
+        subject: `Attendance: skipped (${skipLabel})`,
+        bodyLines: [skipInfo.reason, "", "Nothing was written; Zoom was never joined.", skipInfo.allToday ? `\nToday's scheduled classes:\n${skipInfo.allToday.map((c) => `  ${c.label}: ${c.subjectCode} [${c.rawCell}]`).join("\n")}` : ""],
+      });
+      return;
+    }
+
+    // Only touch Zoom once we know there's an actual session to mark --
+    // --participants-file needs no meeting open. If a meeting's already
+    // running (the common case: running this right after class), leave it
+    // exactly as we found it -- no join, no leave.
+    if (!PARTICIPANTS_FILE) {
+      if (!isInMeeting()) {
+        console.log(`Not currently in a meeting -- joining ${config.zoom.meetingLink} ...`);
+        await joinMeeting(config.zoom.meetingLink, { timeoutSeconds: config.zoom.joinTimeoutSeconds });
+        joinedByUs = true;
+        ensureMutedAndVideoOff();
+        console.log("Joined (muted, video off).");
+      }
+      ensureParticipantsPanelOpen();
+    }
 
     // The session number is derived from the schedule (how many times this
     // subject has met, chronologically, up to today), not from the
@@ -310,8 +376,22 @@ async function main() {
       durationMs: Date.now() - runStartedAt,
     });
     logParticipants(config.logging.participantsLogFile, participantRecords);
+
+    if (UNATTENDED) {
+      const summary = `${subjectCode} ${tab.tabTitle} Session ${targetCol.sessionNumber}: ${matched.length}/${participants.length} matched, ${written} written, ${unmatched.length} unmatched, ${excluded.length} excluded.`;
+      await sendNotification(config, {
+        subject: `Attendance: ${APPLY ? "marked" : "dry-run"} ${subjectCode} S${targetCol.sessionNumber} (${written} written)`,
+        bodyLines: [
+          summary,
+          "",
+          unmatched.length > 0 ? `NOT matched (review manually):\n${unmatched.map((u) => `  "${u.participant}" -- ${u.reason}`).join("\n")}` : "Everyone present was matched.",
+          "",
+          `Detection: ${subjectDetection}${scheduleSlot ? ` (${scheduleSlot.label}, "${scheduleSlot.rawCell}")` : ""}; joined Zoom: ${joinedByUs}.`,
+        ],
+      });
+    }
   } finally {
-    rl.close();
+    rl?.close();
     if (joinedByUs && !NO_LEAVE) {
       console.log("\nLeaving the meeting (we're the ones who joined it)...");
       try {
@@ -323,7 +403,16 @@ async function main() {
   }
 }
 
-main().catch((err) => {
+main().catch(async (err) => {
   console.error("\nFAILED:", err.message);
+  if (UNATTENDED) {
+    try {
+      const config = loadConfig();
+      await sendNotification(config, { subject: "Attendance: scheduled run FAILED", bodyLines: [err.message, "", "Nothing further was attempted -- run manually to investigate:", "  node mark-attendance.mjs"] });
+    } catch {
+      // loadConfig()/sendNotification() failing here shouldn't mask the
+      // original error or change the exit code below.
+    }
+  }
   process.exit(1);
 });

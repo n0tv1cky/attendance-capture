@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.n0tv1cky.attendance-sync</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/n0tv1cky/.attendance-sync/run-scheduled.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/n0tv1cky/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HOME</key>
+        <string>/Users/n0tv1cky</string>
+    </dict>
+
+    <!--
+      One entry per (weekday, session-start + 30min) from config.json's
+      timeSlots -- see README.md's "Scheduled (unattended) runs" section for
+      the derivation and for what to change here if the timetable's slot
+      times ever change. Firing on every weekday/weekend slot regardless of
+      whether a class is actually scheduled that day is deliberate and safe:
+      mark-attendance.mjs's own schedule detection (see its --unattended
+      flag) is what's actually authoritative for "is there a class right
+      now" -- this schedule is purely a timing optimization, per
+      docs/background-automation.md's "two independent gates" pattern. A
+      holiday/no-class firing just logs + emails "skipped, no class today"
+      and touches nothing.
+
+      Weekday: 1=Mon .. 5=Fri (19:00/20:15 slots -> 19:30/20:45)
+      Weekend: 6=Sat, 0=Sun (10:45/12:00/14:45/16:00 slots -> 11:15/12:30/15:15/16:30)
+    -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>19</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>20</integer><key>Minute</key><integer>45</integer></dict>
+        <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>15</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>6</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>11</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>15</integer><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Weekday</key><integer>0</integer><key>Hour</key><integer>16</integer><key>Minute</key><integer>30</integer></dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>/Users/n0tv1cky/.attendance-sync/launchd.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/n0tv1cky/.attendance-sync/launchd.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
