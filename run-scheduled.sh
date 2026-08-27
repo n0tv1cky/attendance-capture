@@ -32,7 +32,7 @@ RUN_LOG=~/.attendance-sync/last-scheduled-run.log
 echo "===== $(date "+%Y-%m-%d %H:%M:%S %Z") — scheduled run start (slot: ${1:-unlabeled}) =====" >> "$RUN_LOG"
 
 set +e
-node /Users/n0tv1cky/Documents/Personal/masters/scripts/attendance/mark-attendance.mjs --apply --unattended >> "$RUN_LOG" 2>&1
+node /Users/n0tv1cky/Documents/Personal/masters/projects/attendance/mark-attendance.mjs --apply --unattended >> "$RUN_LOG" 2>&1
 run_exit=$?
 set -e
 
