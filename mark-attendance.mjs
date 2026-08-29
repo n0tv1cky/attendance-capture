@@ -412,15 +412,17 @@ async function main() {
     } else if (joinAttempted && !joinedByUs && !NO_LEAVE) {
       // joinMeeting() threw (most likely its own timeout) before confirming
       // success, so we genuinely don't know whether we're in the meeting --
-      // isInMeeting() itself can be the unreliable part here (e.g. the
-      // screen was locked, which blocks System Events from seeing any
-      // window at all, confirmed live 2026-08-29 against a case where Zoom
-      // had actually joined fine despite this). Attempt a forced leave
+      // a timeout doesn't necessarily mean the join actually failed (found
+      // live 2026-08-29: a real network outage caused this same timeout,
+      // but confirming a join can fail for reasons unrelated to whether
+      // Zoom itself is reachable to System Events -- screen lock was ruled
+      // out as the cause that day, verified live that isInMeeting() reads
+      // correctly on a locked screen on this Mac). Attempt a forced leave
       // rather than assume "no confirmation" means "nothing to leave" --
       // harmless if we really aren't in a meeting (leaveMeeting({force})
       // just fails to find anything to click, same as any other
       // unconfirmed-leave warning below).
-      console.log("\nJoin wasn't confirmed, but may have succeeded anyway (e.g. screen was locked) -- attempting a leave just in case...");
+      console.log("\nJoin wasn't confirmed, but may have succeeded anyway -- attempting a leave just in case...");
       try {
         await leaveMeeting({ force: true });
       } catch (err) {
