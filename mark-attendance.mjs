@@ -181,6 +181,10 @@ async function main() {
   const runId = makeRunId();
   const runStartedAt = Date.now();
   let joinedByUs = false;
+  // True as soon as we've attempted a join, before we know whether it
+  // actually succeeded -- see the `finally` block below for why this
+  // matters separately from joinedByUs.
+  let joinAttempted = false;
 
   try {
     // Schedule detection happens BEFORE touching Zoom at all, deliberately
@@ -218,6 +222,7 @@ async function main() {
     if (!PARTICIPANTS_FILE) {
       if (!isInMeeting()) {
         console.log(`Not currently in a meeting -- joining ${config.zoom.meetingLink} ...`);
+        joinAttempted = true;
         await joinMeeting(config.zoom.meetingLink, { timeoutSeconds: config.zoom.joinTimeoutSeconds });
         joinedByUs = true;
         ensureMutedAndVideoOff();
@@ -401,6 +406,23 @@ async function main() {
       console.log("\nLeaving the meeting (we're the ones who joined it)...");
       try {
         await leaveMeeting();
+      } catch (err) {
+        console.error(`Couldn't confirm leaving the meeting: ${err.message}`);
+      }
+    } else if (joinAttempted && !joinedByUs && !NO_LEAVE) {
+      // joinMeeting() threw (most likely its own timeout) before confirming
+      // success, so we genuinely don't know whether we're in the meeting --
+      // isInMeeting() itself can be the unreliable part here (e.g. the
+      // screen was locked, which blocks System Events from seeing any
+      // window at all, confirmed live 2026-08-29 against a case where Zoom
+      // had actually joined fine despite this). Attempt a forced leave
+      // rather than assume "no confirmation" means "nothing to leave" --
+      // harmless if we really aren't in a meeting (leaveMeeting({force})
+      // just fails to find anything to click, same as any other
+      // unconfirmed-leave warning below).
+      console.log("\nJoin wasn't confirmed, but may have succeeded anyway (e.g. screen was locked) -- attempting a leave just in case...");
+      try {
+        await leaveMeeting({ force: true });
       } catch (err) {
         console.error(`Couldn't confirm leaving the meeting: ${err.message}`);
       }
