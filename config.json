@@ -64,8 +64,9 @@
 
   "notifications": {
     "toEmail": "<YOUR_INSTITUTE_EMAIL>",
+    "additionalToEmails": [],
     "tokenFile": "~/.attendance-sync/gmail-token.json",
-    "note": "Separate Gmail-send-only OAuth token from googleOAuth above -- see lib/gmailAuth.mjs for why. Only used by --unattended runs (scheduled launchd job); manual runs never email. from == to (own account)."
+    "note": "Separate Gmail-send-only OAuth token from googleOAuth above -- see lib/gmailAuth.mjs for why. Only used by --unattended runs (scheduled launchd job); manual runs never email. from is always toEmail (own account) -- additionalToEmails are extra To: recipients only, never used as From."
   },
 
   "matching": {
