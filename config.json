@@ -54,7 +54,7 @@
 
   "zoom": {
     "meetingLink": "<YOUR_ZOOM_MEETING_LINK>",
-    "joinTimeoutSeconds": 45
+    "joinTimeoutSeconds": 90
   },
 
   "googleOAuth": {
