@@ -380,7 +380,11 @@ async function main() {
     });
     logParticipants(config.logging.participantsLogFile, participantRecords);
 
-    if (UNATTENDED) {
+    // Emails on any real write, not just unattended runs -- a manual
+    // --apply run (e.g. done on the user's behalf while they're not
+    // watching the terminal) deserves the same record as a scheduled one.
+    // Manual dry-runs stay silent, same as before, since nothing changed.
+    if (UNATTENDED || APPLY) {
       await sendNotification(
         config,
         buildRunEmail({
