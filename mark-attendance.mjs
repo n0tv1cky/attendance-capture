@@ -38,7 +38,7 @@ import readline from "node:readline/promises";
 
 import { getGoogleAuthClient } from "./lib/googleAuth.mjs";
 import { fetchScheduleWorkbook, parseTimetable, parseLegend, findCandidateSessions, countSessionOccurrences } from "./lib/schedule.mjs";
-import { listSubjectTabs, loadTab, pickActiveTab, writePresent } from "./lib/attendanceSheet.mjs";
+import { listSubjectTabs, loadTab, pickActiveTab, writePresent, ensureSessionHeaderDate } from "./lib/attendanceSheet.mjs";
 import { loadParticipants } from "./lib/participants.mjs";
 import { matchParticipant } from "./lib/match.mjs";
 import { isInMeeting, joinMeeting, leaveMeeting, ensureParticipantsPanelOpen, ensureMutedAndVideoOff } from "./lib/zoomMeeting.mjs";
@@ -346,6 +346,8 @@ async function main() {
     if (APPLY) {
       ({ written, writtenRowIndices } = await writePresent(sheets, config.attendanceSheet.id, tab, targetCol, rowsToMark, config.attendanceSheet.presentValue));
       console.log(`\nWrote "${config.attendanceSheet.presentValue}" for ${written} student(s).`);
+      const headerUpdate = await ensureSessionHeaderDate(sheets, config.attendanceSheet.id, tab, targetCol, config.attendanceSheet.columns, new Date());
+      if (headerUpdate.updated) console.log(`Header updated to "${headerUpdate.newHeader}".`);
     } else {
       console.log("\nDry run only -- nothing written. Re-run with --apply to write these to the sheet.");
     }
