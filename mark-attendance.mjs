@@ -199,9 +199,17 @@ async function main() {
 
     if (subjectCode === null) {
       // --unattended skip path (see pickSubject): nothing to do, and
-      // nothing was touched (no Zoom join, no sheet write). Still logged +
-      // emailed, so a quiet day shows up in runs.jsonl/your inbox rather
-      // than just... not running.
+      // nothing was touched (no Zoom join, no sheet write). Always logged,
+      // so a quiet day shows up in runs.jsonl even when nothing else
+      // happens -- but only emailed when there was actually a scheduled
+      // class today that this run failed to line up with ("skipped-ambiguous",
+      // or "skipped-none-live" with a non-empty allToday -- both worth a
+      // human glancing at). A day with literally no class on the schedule
+      // ("skipped-no-schedule", or "skipped-none-live" with allToday empty --
+      // every weekend slot fires unconditionally per the launchd plist, see
+      // its comment) is expected and not worth an inbox notification for
+      // each of the day's 4 firings.
+      const isNoScheduleDay = subjectDetection === "skipped-no-schedule" || (subjectDetection === "skipped-none-live" && (skipInfo.allToday?.length ?? 0) === 0);
       logRun(config.logging.runsLogFile, {
         runId,
         term: config.term,
@@ -211,7 +219,9 @@ async function main() {
         skipInfo,
         durationMs: Date.now() - runStartedAt,
       });
-      await sendNotification(config, buildSkippedEmail({ subjectDetection, skipInfo }));
+      if (!isNoScheduleDay) {
+        await sendNotification(config, buildSkippedEmail({ subjectDetection, skipInfo }));
+      }
       return;
     }
 
